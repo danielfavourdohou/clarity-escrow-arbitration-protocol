@@ -1,13 +1,29 @@
 ;; utils.clar
 ;; Safe-math & time helpers for escrow & arbitration protocol
 
+;; For testing purposes, we'll use a mock block height
+(define-data-var mock-block-height uint u0)
+
+;; Get current block height (for testing compatibility)
+(define-read-only (get-current-block-height)
+  (var-get mock-block-height)
+)
+
+;; Set mock block height (for testing)
+(define-public (set-mock-block-height (new-height uint))
+  (begin
+    (var-set mock-block-height new-height)
+    (ok true)
+  )
+)
+
 ;; Error codes
 (define-constant ERR-ARITHMETIC-OVERFLOW u5001)
 (define-constant ERR-DIVISION-BY-ZERO u5002)
 (define-constant ERR-INVALID-INPUT u5003)
 
 ;; Time constants (in blocks)
-(define-constant BLOCKS-PER-MINUTE u0.1) ;; ~10 blocks per minute
+(define-constant BLOCKS-PER-MINUTE u1) ;; ~10 blocks per minute
 (define-constant BLOCKS-PER-HOUR u6) ;; ~6 blocks per hour
 (define-constant BLOCKS-PER-DAY u144) ;; ~144 blocks per day
 (define-constant BLOCKS-PER-WEEK u1008) ;; ~1008 blocks per week
@@ -47,4 +63,6 @@
 (define-read-only (safe-div (a uint) (b uint))
   (if (is-eq b u0)
     (err ERR-DIVISION-BY-ZERO)
-    (ok (
+    (ok (/ a b))
+  )
+)

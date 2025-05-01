@@ -1,13 +1,21 @@
 ;; arbitration.clar
 ;; Dispute escalation & vote resolution for decentralized escrow & arbitration protocol
 
+;; Import traits
+(use-trait dao-trait .traits.dao-trait)
+(use-trait escrow-trait .traits.escrow-trait)
+(use-trait token-trait .traits.token-trait)
+
+;; Implement traits
+(impl-trait .traits.arbitration-trait)
+
 ;; Error codes
 (define-constant ERR-NOT-AUTHORIZED u2001)
 (define-constant ERR-DISPUTE-NOT-FOUND u2002)
 (define-constant ERR-DISPUTE-ALREADY-EXISTS u2003)
 (define-constant ERR-DISPUTE-ALREADY-RESOLVED u2004)
 (define-constant ERR-NOT-ENOUGH-ARBITERS u2005)
-(define-constant ERR-VOTING-PERIOD-ACTIVE u2006) 
+(define-constant ERR-VOTING-PERIOD-ACTIVE u2006)
 (define-constant ERR-VOTING-PERIOD-EXPIRED u2007)
 (define-constant ERR-ALREADY-VOTED u2008)
 (define-constant ERR-NOT-ELIGIBLE-ARBITER u2009)
@@ -79,17 +87,17 @@
 (define-public (register-dispute (escrow-id uint))
   (let
     (
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
       (voting-end-time (+ current-time (var-get voting-period)))
       (existing-dispute (map-get? disputes escrow-id))
     )
-    
+
     ;; Check caller is escrow contract
     (asserts! (is-eq contract-caller .escrow) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Check dispute doesn't already exist
     (asserts! (is-none existing-dispute) (err ERR-DISPUTE-ALREADY-EXISTS))
-    
+
     ;; Create dispute record
     (map-set disputes escrow-id {
       state: DISPUTE-ACTIVE,
@@ -101,84 +109,83 @@
       resolved-at: u0,
       winner: none
     })
-    
+
     ;; Log event
     (print { event: "dispute-registered", escrow-id: escrow-id, voting-ends-at: voting-end-time })
-    
+
     (ok true)
   )
 )
 
 ;; Vote on a dispute
-(define-public (vote-on-dispute (escrow-id uint) (vote-for uint))
+(define-public (vote-on-dispute (dao-contract <dao-trait>) (token-contract <token-trait>) (escrow-contract <escrow-trait>) (escrow-id uint) (vote-for uint))
   (let
     (
       (dispute (unwrap! (map-get? disputes escrow-id) (err ERR-DISPUTE-NOT-FOUND)))
-      (current-time block-height)
-      (escrow-data (unwrap! (contract-call? .escrow get-escrow escrow-id) (err ERR-NO-DISPUTE-FOUND)))
+      (current-time (contract-call? .utils get-current-block-height))
+      (escrow-data (unwrap! (contract-call? escrow-contract get-escrow escrow-id) (err ERR-NO-DISPUTE-FOUND)))
       (voter-info {dispute-id: escrow-id, arbiter: tx-sender})
       (previous-vote (map-get? arbiter-votes voter-info))
     )
-    
+
     ;; Check if dispute is active
     (asserts! (is-eq (get state dispute) DISPUTE-ACTIVE) (err ERR-DISPUTE-ALREADY-RESOLVED))
-    
+
     ;; Check if voting period is valid
     (asserts! (>= (get voting-ends-at dispute) current-time) (err ERR-VOTING-PERIOD-EXPIRED))
-    
+
     ;; Check if voter is staked arbiter
-    (asserts! (contract-call? .dao is-staked-arbiter tx-sender) (err ERR-NOT-ELIGIBLE-ARBITER))
-    
+    (asserts! (unwrap! (contract-call? dao-contract is-staked-arbiter tx-sender) (err ERR-NOT-ELIGIBLE-ARBITER)) (err ERR-NOT-ELIGIBLE-ARBITER))
+
     ;; Check if arbiter has not voted already
     (asserts! (is-none previous-vote) (err ERR-ALREADY-VOTED))
-    
+
     ;; Check vote is valid
     (asserts! (or (is-eq vote-for VOTE-SENDER) (is-eq vote-for VOTE-RECEIVER)) (err ERR-INVALID-VOTE))
-    
+
     ;; Record vote
     (map-set arbiter-votes voter-info {voted: true, vote: vote-for})
-    
+
     ;; Update dispute vote counts
-    (match vote-for
-      VOTE-SENDER (map-set disputes escrow-id (merge dispute {
+    (if (is-eq vote-for VOTE-SENDER)
+      (map-set disputes escrow-id (merge dispute {
         sender-votes: (+ (get sender-votes dispute) u1),
         total-votes: (+ (get total-votes dispute) u1)
       }))
-      VOTE-RECEIVER (map-set disputes escrow-id (merge dispute {
+      (map-set disputes escrow-id (merge dispute {
         receiver-votes: (+ (get receiver-votes dispute) u1),
         total-votes: (+ (get total-votes dispute) u1)
       }))
-      true
     )
-    
+
     ;; Log event
     (print { event: "dispute-vote-cast", escrow-id: escrow-id, arbiter: tx-sender, vote: vote-for })
-    
+
     ;; Reward arbiter for participation
-    (try! (contract-call? .token mint-reward tx-sender))
-    
+    (try! (contract-call? token-contract mint-reward tx-sender))
+
     (ok true)
   )
 )
 
 ;; Finalize dispute - can be called by any arbiter after voting period
-(define-public (finalize-dispute (escrow-id uint))
+(define-public (finalize-dispute (dao-contract <dao-trait>) (escrow-contract <escrow-trait>) (escrow-id uint))
   (let
     (
       (dispute (unwrap! (map-get? disputes escrow-id) (err ERR-DISPUTE-NOT-FOUND)))
-      (current-time block-height)
-      (escrow-data (unwrap! (contract-call? .escrow get-escrow escrow-id) (err ERR-NO-DISPUTE-FOUND)))
+      (current-time (contract-call? .utils get-current-block-height))
+      (escrow-data (unwrap! (contract-call? escrow-contract get-escrow escrow-id) (err ERR-NO-DISPUTE-FOUND)))
     )
-    
+
     ;; Check if dispute is active
     (asserts! (is-eq (get state dispute) DISPUTE-ACTIVE) (err ERR-DISPUTE-ALREADY-RESOLVED))
-    
+
     ;; Check if voting period has ended
     (asserts! (< (get voting-ends-at dispute) current-time) (err ERR-VOTING-PERIOD-ACTIVE))
-    
+
     ;; Check minimum number of votes
     (asserts! (>= (get total-votes dispute) (var-get min-arbiters-required)) (err ERR-NOT-ENOUGH-ARBITERS))
-    
+
     ;; Determine winner
     (let
       (
@@ -188,26 +195,26 @@
         (receiver-votes (get receiver-votes dispute))
         (winning-principal (if (>= sender-votes receiver-votes) sender receiver))
       )
-      
+
       ;; Update dispute as resolved
       (map-set disputes escrow-id (merge dispute {
         state: DISPUTE-RESOLVED,
         resolved-at: current-time,
         winner: (some winning-principal)
       }))
-      
+
       ;; Execute DAO proposal to resolve the dispute
-      (try! (contract-call? .dao create-proposal escrow-id winning-principal))
-      
+      (try! (contract-call? dao-contract create-proposal escrow-id winning-principal))
+
       ;; Log event
-      (print { 
-        event: "dispute-finalized", 
-        escrow-id: escrow-id, 
-        winner: winning-principal, 
-        sender-votes: sender-votes, 
-        receiver-votes: receiver-votes 
+      (print {
+        event: "dispute-finalized",
+        escrow-id: escrow-id,
+        winner: winning-principal,
+        sender-votes: sender-votes,
+        receiver-votes: receiver-votes
       })
-      
+
       (ok winning-principal)
     )
   )

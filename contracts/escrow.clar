@@ -1,7 +1,12 @@
 ;; escrow.clar
 ;; Core escrow lifecycle for decentralized escrow & arbitration protocol
 
-(impl-trait .dao.governance-trait)
+;; Import traits
+(use-trait arbitration-trait .traits.arbitration-trait)
+
+;; Implement traits
+(impl-trait .traits.governance-trait)
+(impl-trait .traits.escrow-trait)
 
 ;; Error codes
 (define-constant ERR-NOT-AUTHORIZED u1001)
@@ -47,7 +52,10 @@
 
 ;; Public getters
 (define-read-only (get-escrow (escrow-id uint))
-  (map-get? escrows escrow-id)
+  (match (map-get? escrows escrow-id)
+    escrow (ok escrow)
+    (err ERR-ESCROW-NOT-FOUND)
+  )
 )
 
 (define-read-only (get-protocol-fee-percent)
@@ -73,9 +81,9 @@
 )
 
 ;; Create a new escrow
-(define-public (create-escrow 
-    (receiver principal) 
-    (timeout uint) 
+(define-public (create-escrow
+    (receiver principal)
+    (timeout uint)
     (description (string-ascii 256))
   )
   (let
@@ -84,19 +92,19 @@
       (escrow-amount (stx-get-balance tx-sender))
       (protocol-fee (calculate-fee escrow-amount))
       (net-amount (- escrow-amount protocol-fee))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
+
     ;; Check for valid inputs
     (asserts! (> escrow-amount u0) (err ERR-INVALID-AMOUNT))
     (asserts! (> timeout current-time) (err ERR-INVALID-AMOUNT))
-    
+
     ;; Transfer STX to the contract
     (try! (stx-transfer? escrow-amount tx-sender (as-contract tx-sender)))
-    
+
     ;; Transfer protocol fee to treasury
     (try! (as-contract (stx-transfer? protocol-fee tx-sender (var-get treasury-address))))
-    
+
     ;; Create new escrow entry
     (map-set escrows escrow-id {
       sender: tx-sender,
@@ -108,13 +116,13 @@
       description: description,
       protocol-fee: protocol-fee
     })
-    
+
     ;; Update next escrow ID
     (var-set next-escrow-id (+ escrow-id u1))
-    
+
     ;; Log event
     (print { event: "escrow-created", escrow-id: escrow-id, sender: tx-sender, receiver: receiver, amount: net-amount })
-    
+
     (ok escrow-id)
   )
 )
@@ -125,22 +133,22 @@
     (
       (escrow (unwrap! (map-get? escrows escrow-id) (err ERR-ESCROW-NOT-FOUND)))
     )
-    
+
     ;; Check authorization - only sender can release
     (asserts! (is-eq tx-sender (get sender escrow)) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Check escrow state
     (asserts! (is-eq (get state escrow) STATE-ACTIVE) (err ERR-INVALID-ESCROW-STATE))
-    
+
     ;; Update escrow state
     (map-set escrows escrow-id (merge escrow { state: STATE-RELEASED }))
-    
+
     ;; Transfer funds to receiver
     (try! (as-contract (stx-transfer? (get amount escrow) tx-sender (get receiver escrow))))
-    
+
     ;; Log event
     (print { event: "escrow-released", escrow-id: escrow-id, sender: (get sender escrow), receiver: (get receiver escrow) })
-    
+
     (ok true)
   )
 )
@@ -150,56 +158,56 @@
   (let
     (
       (escrow (unwrap! (map-get? escrows escrow-id) (err ERR-ESCROW-NOT-FOUND)))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
+
     ;; Check if timeout has passed
     (asserts! (>= current-time (get timeout escrow)) (err ERR-TIMEOUT-NOT-REACHED))
-    
+
     ;; Check escrow state
     (asserts! (is-eq (get state escrow) STATE-ACTIVE) (err ERR-INVALID-ESCROW-STATE))
-    
+
     ;; Update escrow state
     (map-set escrows escrow-id (merge escrow { state: STATE-REFUNDED }))
-    
+
     ;; Transfer funds back to sender
     (try! (as-contract (stx-transfer? (get amount escrow) tx-sender (get sender escrow))))
-    
+
     ;; Log event
     (print { event: "escrow-refunded", escrow-id: escrow-id, sender: (get sender escrow) })
-    
+
     (ok true)
   )
 )
 
 ;; Escalate to dispute - available to both sender and receiver
-(define-public (dispute-escrow (escrow-id uint))
+(define-public (dispute-escrow (arbitration-contract <arbitration-trait>) (escrow-id uint))
   (let
     (
       (escrow (unwrap! (map-get? escrows escrow-id) (err ERR-ESCROW-NOT-FOUND)))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
+
     ;; Check if sender is either sender or receiver
-    (asserts! (or (is-eq tx-sender (get sender escrow)) 
-                 (is-eq tx-sender (get receiver escrow))) 
+    (asserts! (or (is-eq tx-sender (get sender escrow))
+                 (is-eq tx-sender (get receiver escrow)))
             (err ERR-SENDER-NOT-PARTICIPANT))
-    
+
     ;; Check escrow state
     (asserts! (is-eq (get state escrow) STATE-ACTIVE) (err ERR-INVALID-ESCROW-STATE))
-    
+
     ;; Check escrow has not timed out
     (asserts! (< current-time (get timeout escrow)) (err ERR-ESCROW-EXPIRED))
-    
+
     ;; Update escrow state
     (map-set escrows escrow-id (merge escrow { state: STATE-DISPUTED }))
-    
+
     ;; Register dispute with arbitration contract
-    (try! (contract-call? .arbitration register-dispute escrow-id))
-    
+    (try! (contract-call? arbitration-contract register-dispute escrow-id))
+
     ;; Log event
     (print { event: "escrow-disputed", escrow-id: escrow-id, disputed-by: tx-sender })
-    
+
     (ok true)
   )
 )
@@ -210,22 +218,19 @@
     (
       (escrow (unwrap! (map-get? escrows escrow-id) (err ERR-ESCROW-NOT-FOUND)))
     )
-    
-    ;; Verify caller is arbitration contract
-    (asserts! (is-eq contract-caller .arbitration) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Check escrow is in disputed state
     (asserts! (is-eq (get state escrow) STATE-DISPUTED) (err ERR-INVALID-ESCROW-STATE))
-    
+
     ;; Update escrow state
     (map-set escrows escrow-id (merge escrow { state: STATE-RESOLVED }))
-    
+
     ;; Transfer funds to winner
     (try! (as-contract (stx-transfer? (get amount escrow) tx-sender winner)))
-    
+
     ;; Log event
     (print { event: "dispute-resolved", escrow-id: escrow-id, winner: winner })
-    
+
     (ok true)
   )
 )

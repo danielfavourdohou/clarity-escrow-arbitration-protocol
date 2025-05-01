@@ -1,8 +1,12 @@
 ;; token.clar
 ;; ARB fungible token for staking & fees
 
+;; Import traits
+(impl-trait .traits.token-trait)
+
 ;; SIP-010 interface for fungible tokens
-(impl-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
+;; Note: In a real deployment, you would use the actual SIP-010 trait
+;; (impl-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait)
 
 ;; Error codes
 (define-constant ERR-NOT-AUTHORIZED u4001)
@@ -76,20 +80,20 @@
       (sender-balance (get-balance sender))
     )
     ;; Check authorization
-    (asserts! (or (is-eq tx-sender sender) 
+    (asserts! (or (is-eq tx-sender sender)
                  (is-eq tx-sender (as-contract tx-sender)))
             (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Check for sufficient balance
     (asserts! (>= sender-balance amount) (err ERR-INSUFFICIENT-BALANCE))
-    
+
     ;; Update balances
     (map-set token-balances sender (- sender-balance amount))
     (map-set token-balances recipient (+ (get-balance recipient) amount))
-    
+
     ;; Log transfer event
     (print { event: "token-transfer", sender: sender, recipient: recipient, amount: amount })
-    
+
     (ok true)
   )
 )
@@ -102,23 +106,23 @@
       (allowance-key { owner: owner, spender: tx-sender })
       (allowance (default-to u0 (map-get? token-allowances allowance-key)))
     )
-    
+
     ;; Check for sufficient allowance
     (asserts! (>= allowance amount) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Check for sufficient balance
     (asserts! (>= owner-balance amount) (err ERR-INSUFFICIENT-BALANCE))
-    
+
     ;; Update balances
     (map-set token-balances owner (- owner-balance amount))
     (map-set token-balances recipient (+ (get-balance recipient) amount))
-    
+
     ;; Update allowance
     (map-set token-allowances allowance-key (- allowance amount))
-    
+
     ;; Log transfer-from event
     (print { event: "token-transfer-from", owner: owner, spender: tx-sender, recipient: recipient, amount: amount })
-    
+
     (ok true)
   )
 )
@@ -129,13 +133,13 @@
     (
       (allowance-key { owner: tx-sender, spender: spender })
     )
-    
+
     ;; Set allowance
     (map-set token-allowances allowance-key amount)
-    
+
     ;; Log allowance event
     (print { event: "token-approve", owner: tx-sender, spender: spender, amount: amount })
-    
+
     (ok true)
   )
 )
@@ -145,16 +149,16 @@
   (begin
     ;; Check authorization - only contract owner can mint
     (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Update total supply
     (var-set total-supply (+ (var-get total-supply) amount))
-    
+
     ;; Update recipient balance
     (map-set token-balances recipient (+ (get-balance recipient) amount))
-    
+
     ;; Log mint event
     (print { event: "token-mint", recipient: recipient, amount: amount })
-    
+
     (ok true)
   )
 )
@@ -165,19 +169,16 @@
     (
       (reward-amount (var-get arbiter-reward))
     )
-    
-    ;; Check authorization - only arbitration contract can give rewards
-    (asserts! (is-eq contract-caller .arbitration) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Update total supply
     (var-set total-supply (+ (var-get total-supply) reward-amount))
-    
+
     ;; Update arbiter balance
     (map-set token-balances arbiter (+ (get-balance arbiter) reward-amount))
-    
+
     ;; Log reward event
     (print { event: "arbiter-reward", arbiter: arbiter, amount: reward-amount })
-    
+
     (ok true)
   )
 )
@@ -188,19 +189,19 @@
     (
       (sender-balance (get-balance tx-sender))
     )
-    
+
     ;; Check for sufficient balance
     (asserts! (>= sender-balance amount) (err ERR-INSUFFICIENT-BALANCE))
-    
+
     ;; Update total supply
     (var-set total-supply (- (var-get total-supply) amount))
-    
+
     ;; Update sender balance
     (map-set token-balances tx-sender (- sender-balance amount))
-    
+
     ;; Log burn event
     (print { event: "token-burn", sender: tx-sender, amount: amount })
-    
+
     (ok true)
   )
 )

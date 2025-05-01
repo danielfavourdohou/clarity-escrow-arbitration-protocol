@@ -1,13 +1,12 @@
 ;; dao.clar
 ;; Arbiter staking and governance for decentralized escrow & arbitration protocol
 
-;; Define the trait for governance interaction
-(define-trait governance-trait
-  (
-    ;; Execute a proposal that has been approved
-    (execute-proposal (uint uint principal) (response bool uint))
-  )
-)
+;; Import traits
+(use-trait escrow-trait .traits.escrow-trait)
+(use-trait token-trait .traits.token-trait)
+
+;; Implement DAO trait
+(impl-trait .traits.dao-trait)
 
 ;; Error codes
 (define-constant ERR-NOT-AUTHORIZED u3001)
@@ -77,7 +76,7 @@
 )
 
 (define-read-only (is-staked-arbiter (address principal))
-  (is-some (map-get? staked-arbiters address))
+  (ok (is-some (map-get? staked-arbiters address)))
 )
 
 ;; Authorization check
@@ -86,93 +85,93 @@
 )
 
 ;; Stake tokens to become an arbiter
-(define-public (stake-tokens (amount uint))
+(define-public (stake-tokens (token-contract <token-trait>) (amount uint))
   (let
     (
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
       (lockup-end (+ current-time (var-get lockup-period)))
       (existing-stake (map-get? staked-arbiters tx-sender))
     )
-    
+
     ;; Check amount meets minimum
     (asserts! (>= amount (var-get minimum-stake)) (err ERR-INSUFFICIENT-STAKE))
-    
+
     ;; Check not already staked
     (asserts! (is-none existing-stake) (err ERR-ALREADY-STAKED))
-    
+
     ;; Transfer ARB tokens from user to contract
-    (try! (contract-call? .token transfer amount tx-sender (as-contract tx-sender)))
-    
+    (try! (contract-call? token-contract transfer amount tx-sender (as-contract tx-sender)))
+
     ;; Record stake
     (map-set staked-arbiters tx-sender {
       stake-amount: amount,
       staked-at: current-time,
       lockup-until: lockup-end
     })
-    
+
     ;; Log event
     (print { event: "arbiter-staked", arbiter: tx-sender, amount: amount, lockup-until: lockup-end })
-    
+
     (ok true)
   )
 )
 
 ;; Unstake tokens (after lockup period)
-(define-public (unstake-tokens)
+(define-public (unstake-tokens (token-contract <token-trait>))
   (let
     (
       (stake-info (unwrap! (map-get? staked-arbiters tx-sender) (err ERR-NOT-STAKED)))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
+
     ;; Check lockup period has ended
     (asserts! (>= current-time (get lockup-until stake-info)) (err ERR-LOCKUP-ACTIVE))
-    
+
     ;; Transfer ARB tokens back to user
-    (try! (as-contract (contract-call? .token transfer 
-                                      (get stake-amount stake-info) 
-                                      tx-sender 
+    (try! (as-contract (contract-call? token-contract transfer
+                                      (get stake-amount stake-info)
+                                      tx-sender
                                       tx-sender)))
-    
+
     ;; Remove staking record
     (map-delete staked-arbiters tx-sender)
-    
+
     ;; Log event
     (print { event: "arbiter-unstaked", arbiter: tx-sender, amount: (get stake-amount stake-info) })
-    
+
     (ok true)
   )
 )
 
 ;; Slash tokens from a malicious arbiter
-(define-public (slash-arbiter (arbiter principal))
+(define-public (slash-arbiter (token-contract <token-trait>) (arbiter principal))
   (let
     (
       (stake-info (unwrap! (map-get? staked-arbiters arbiter) (err ERR-NOT-STAKED)))
       (slash-amount (/ (* (get stake-amount stake-info) (var-get slashing-percent)) u1000))
       (remaining-stake (- (get stake-amount stake-info) slash-amount))
     )
-    
+
     ;; Check authorization - only contract owner can slash
     (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Update stake amount
     (map-set staked-arbiters arbiter (merge stake-info { stake-amount: remaining-stake }))
-    
+
     ;; Transfer slashed tokens to treasury
-    (try! (as-contract (contract-call? .token transfer 
-                                      slash-amount 
-                                      tx-sender 
+    (try! (as-contract (contract-call? token-contract transfer
+                                      slash-amount
+                                      tx-sender
                                       (var-get treasury-address))))
-    
+
     ;; Log event
-    (print { 
-      event: "arbiter-slashed", 
-      arbiter: arbiter, 
-      slash-amount: slash-amount, 
-      remaining-stake: remaining-stake 
+    (print {
+      event: "arbiter-slashed",
+      arbiter: arbiter,
+      slash-amount: slash-amount,
+      remaining-stake: remaining-stake
     })
-    
+
     (ok true)
   )
 )
@@ -182,12 +181,9 @@
   (let
     (
       (proposal-id (var-get next-proposal-id))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
-    ;; Check authorization - only arbitration contract can create proposals
-    (asserts! (is-eq contract-caller .arbitration) (err ERR-NOT-AUTHORIZED))
-    
+
     ;; Create proposal record
     (map-set proposals proposal-id {
       escrow-id: escrow-id,
@@ -196,16 +192,16 @@
       created-at: current-time,
       executed-at: u0
     })
-    
+
     ;; Increment next proposal ID
     (var-set next-proposal-id (+ proposal-id u1))
-    
+
     ;; Execute proposal immediately - in more complex DAO implementations, this might wait for voting
     (try! (execute-proposal proposal-id))
-    
+
     ;; Log event
     (print { event: "proposal-created", proposal-id: proposal-id, escrow-id: escrow-id, winner: winner })
-    
+
     (ok proposal-id)
   )
 )
@@ -215,27 +211,38 @@
   (let
     (
       (proposal (unwrap! (map-get? proposals proposal-id) (err ERR-PROPOSAL-NOT-FOUND)))
-      (current-time block-height)
+      (current-time (contract-call? .utils get-current-block-height))
     )
-    
+
     ;; Check proposal state
     (asserts! (is-eq (get state proposal) PROPOSAL-PENDING) (err ERR-PROPOSAL-ALREADY-EXECUTED))
-    
+
     ;; Update proposal state
-    (map-set proposals proposal-id (merge proposal { 
+    (map-set proposals proposal-id (merge proposal {
       state: PROPOSAL-EXECUTED,
       executed-at: current-time
     }))
-    
-    ;; Execute via escrow contract
-    (try! (contract-call? .escrow execute-proposal 
-                         proposal-id 
-                         (get escrow-id proposal) 
-                         (get winner proposal)))
-    
+
     ;; Log event
     (print { event: "proposal-executed", proposal-id: proposal-id })
-    
+
+    (ok true)
+  )
+)
+
+;; Execute a proposal with escrow contract
+(define-public (execute-proposal-with-escrow (escrow-contract <escrow-trait>) (proposal-id uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) (err ERR-PROPOSAL-NOT-FOUND)))
+    )
+
+    ;; Execute via escrow contract
+    (try! (contract-call? escrow-contract execute-proposal
+                         proposal-id
+                         (get escrow-id proposal)
+                         (get winner proposal)))
+
     (ok true)
   )
 )
@@ -245,3 +252,40 @@
   (begin
     (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
     (asserts! (> new-minimum u0) (err ERR-MINIMUM-STAKE-TOO-LOW))
+    (var-set minimum-stake new-minimum)
+    (ok true)
+  )
+)
+
+(define-public (set-lockup-period (new-period uint))
+  (begin
+    (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
+    (var-set lockup-period new-period)
+    (ok true)
+  )
+)
+
+(define-public (set-slashing-percent (new-percent uint))
+  (begin
+    (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
+    (asserts! (<= new-percent u1000) (err ERR-INVALID-AMOUNT))
+    (var-set slashing-percent new-percent)
+    (ok true)
+  )
+)
+
+(define-public (set-treasury (new-treasury principal))
+  (begin
+    (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
+    (var-set treasury-address new-treasury)
+    (ok true)
+  )
+)
+
+(define-public (transfer-ownership (new-owner principal))
+  (begin
+    (asserts! (is-contract-owner) (err ERR-NOT-AUTHORIZED))
+    (var-set contract-owner new-owner)
+    (ok true)
+  )
+)

@@ -29,6 +29,11 @@ epoch = 3.1
 path = 'contracts/utils.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.traits]
+path = 'contracts/traits.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
