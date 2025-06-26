@@ -1,0 +1,44 @@
+[project]
+name = 'clarity-escrow-arbitration-protocol'
+description = ''
+authors = []
+telemetry = true
+cache_dir = './.cache'
+requirements = []
+[contracts.arbitration]
+path = 'contracts/arbitration.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.dao]
+path = 'contracts/dao.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.escrow]
+path = 'contracts/escrow.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.token]
+path = 'contracts/token.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.utils]
+path = 'contracts/utils.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.traits]
+path = 'contracts/traits.clar'
+clarity_version = 3
+epoch = 3.1
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
